@@ -51,6 +51,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hrClipY as Number = 0;
     private var _hrClipW as Number = 0;
     private var _hrClipH as Number = 0;
+    private var _lastDrawnHeartRate as String = "";
 
     function initialize() {
         WatchFace.initialize();
@@ -226,6 +227,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         _hrClipY = _subWindowY - hrHeight / 2;
         _hrClipW = hrWidth;
         _hrClipH = hrHeight;
+        _lastDrawnHeartRate = heartRate;
 
         // Battery Icon
         var batX = secX + 25, batY = baselineY - 34, batW = 16, batH = 28;
@@ -255,12 +257,16 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(_secClipX, _secClipY, Graphics.FONT_TINY, secondsStr, Graphics.TEXT_JUSTIFY_LEFT);
 
-        // Update Heart Rate
-        dc.setClip(_hrClipX, _hrClipY, _hrClipW, _hrClipH);
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
-        dc.clear();
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(_hrClipX + _hrClipW/2, _hrClipY + _hrClipH/2, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        // Update Heart Rate only when it actually changed - it rarely moves
+        // every second, so this skips a clear+redraw on most calls.
+        if (!heartRate.equals(_lastDrawnHeartRate)) {
+            dc.setClip(_hrClipX, _hrClipY, _hrClipW, _hrClipH);
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
+            dc.clear();
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(_hrClipX + _hrClipW/2, _hrClipY + _hrClipH/2, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            _lastDrawnHeartRate = heartRate;
+        }
 
         dc.clearClip();
     }
