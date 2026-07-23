@@ -12,12 +12,11 @@ import Toybox.Application.Storage;
 class Instinct2DraftView extends WatchUi.WatchFace {
 
     var timeFontResource;
-    
+
     // Cached data members
     private var _lastMinute as Number = -1;
     private var _lastHour as Number = -1;
-    private var _lastDay as Number = -1;
-    
+
     // Per-minute cached data
     private var _minutesStr as String = "";
     private var _stepsStr as String = "0";
@@ -26,7 +25,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hrSampleCount as Number = 0;
     private var _hrMin as Number = 0;
     private var _hrMax as Number = 0;
-    
+
     // Per-hour/change cached data
     private var _hoursStr as String = "";
     private var _dateStr as String = "";
@@ -36,8 +35,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _batteryStr as String = "0%";
     private var _batteryLevel as Float = 0.0;
     private var _drainStr as String = "--%/d";
-    
-    // Partial update state
+
+    // Static layout, computed once
+    private var _subWindowX as Number = 144;
+    private var _subWindowY as Number = 31;
+    private var _subWindowR as Number = 28;
+
+    // Partial/dynamic update state
     private var _isSleep as Boolean = false;
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
@@ -50,13 +54,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     function initialize() {
         WatchFace.initialize();
-        System.println("View initialize");
-        
+
         // Load custom font resource once
         try {
             timeFontResource = WatchUi.loadResource(Rez.Fonts.LargeTimeFont);
         } catch (e) {
-            System.println("Failed to load custom font: " + e.getErrorMessage());
             timeFontResource = Graphics.FONT_SYSTEM_NUMBER_THAI_HOT;
         }
 
@@ -67,6 +69,16 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // Load your resources here
     function onLayout(dc as Dc) as Void {
         setLayout(null);
+
+        // Sub-window ("Eye") geometry is fixed per device; compute once
+        if (WatchUi has :getSubscreen) {
+            var subscreen = WatchUi.getSubscreen();
+            if (subscreen != null) {
+                _subWindowX = subscreen.x + (subscreen.width / 2);
+                _subWindowY = subscreen.y + (subscreen.height / 2);
+                _subWindowR = subscreen.width / 2 - 5;
+            }
+        }
     }
 
     // Called when this View is brought to the foreground. Restore
@@ -77,23 +89,23 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     // Update the view
     function onUpdate(dc as Graphics.Dc) as Void {
-        var now = Time.now();
         var clockTime = System.getClockTime();
         var currentSecond = clockTime.sec;
         var currentMinute = clockTime.min;
         var currentHour = clockTime.hour;
-        var infoShort = Gregorian.info(now, Time.FORMAT_SHORT);
-        var currentDay = infoShort.day;
 
         var forceUpdate = (_lastMinute == -1);
+        var hourChanged = forceUpdate || currentHour != _lastHour;
+        var minuteChanged = forceUpdate || currentMinute != _lastMinute;
 
         // --- HOURLY / DAILY / CHANGE UPDATES ---
-        if (forceUpdate || currentHour != _lastHour || currentDay != _lastDay) {
+        if (hourChanged) {
             _lastHour = currentHour;
-            _lastDay = currentDay;
 
+            var now = Time.now();
             _hoursStr = currentHour.format("%02d");
-            
+
+            var infoShort = Gregorian.info(now, Time.FORMAT_SHORT);
             var infoMedium = Gregorian.info(now, Time.FORMAT_MEDIUM);
             _dayOfWeekStr = infoMedium.day_of_week.toUpper();
             _dateStr = Lang.format("$1$.$2$.$3$", [
@@ -108,7 +120,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 if (weather != null && weather.temperature != null) {
                     _tempStr = weather.temperature.format("%d") + "°";
                 }
-                
+
                 var dailyForecast = Weather.getDailyForecast();
                 if (dailyForecast != null && dailyForecast.size() > 0) {
                     var today = dailyForecast[0];
@@ -123,7 +135,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         }
 
         // --- MINUTELY UPDATES ---
-        if (forceUpdate || currentMinute != _lastMinute) {
+        if (minuteChanged) {
             _lastMinute = currentMinute;
             _minutesStr = currentMinute.format("%02d");
 
@@ -140,16 +152,24 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
             // Update HR Graph data samples
             updateHrGraphData();
-            
-            // Re-update battery drain if needed (could be minutely for more precision if desired, 
-            // but usually hourly is enough. Let's stick to hourly/change for drain too to save CPU).
         }
 
-        // --- PER-SECOND UPDATES ---
-        var secondsStr = currentSecond.format("%02d");
         var heartRate = getHeartRateString();
 
-        // --- DRAWING ---
+        // Only pay for a full clear + redraw of every element when something
+        // that actually changes the layout (hour/minute) happened. The other
+        // ~59 out of 60 calls per minute only need to refresh the seconds and
+        // heart rate text, so reuse the cheap clip-based path for those.
+        if (hourChanged || minuteChanged) {
+            drawFullFrame(dc, currentSecond, heartRate);
+        } else {
+            drawDynamicRegions(dc, currentSecond, heartRate);
+        }
+    }
+
+    private function drawFullFrame(dc as Graphics.Dc, currentSecond as Number, heartRate as String) as Void {
+        var secondsStr = currentSecond.format("%02d");
+
         dc.clearClip(); // Ensure we are not drawing with a clip from partial update
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
         dc.clear();
@@ -160,14 +180,14 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var tinyFont = Graphics.FONT_TINY;
         var timeHeight = dc.getFontHeight(timeFont);
         var tinyHeight = dc.getFontHeight(tinyFont);
-        
+
         // Top Stats
         var topFont = Graphics.FONT_XTINY;
         dc.drawText(25, 5, topFont, _tempStr, Graphics.TEXT_JUSTIFY_LEFT);
         var tempWidth = dc.getTextWidthInPixels(_tempStr, topFont);
         dc.drawText(25 + tempWidth + 2, 5, topFont, _hiLowStr, Graphics.TEXT_JUSTIFY_LEFT);
         dc.drawText(20, 20, topFont, _stepsStr, Graphics.TEXT_JUSTIFY_LEFT);
-        
+
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(60, 20, topFont, _drainStr, Graphics.TEXT_JUSTIFY_LEFT);
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
@@ -176,7 +196,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         dc.drawText(0, baselineY - timeHeight - 5, tinyFont, _dateStr, Graphics.TEXT_JUSTIFY_LEFT);
         dc.drawText(0, baselineY - timeHeight, timeFont, _hoursStr, Graphics.TEXT_JUSTIFY_LEFT);
         var hoursWidth = dc.getTextWidthInPixels(_hoursStr, timeFont);
-        
+
         var minX = hoursWidth;
         dc.drawText(minX, baselineY - timeHeight, timeFont, _minutesStr, Graphics.TEXT_JUSTIFY_LEFT);
         var minutesWidth = dc.getTextWidthInPixels(_minutesStr, timeFont);
@@ -185,7 +205,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var xtinyFont = Graphics.FONT_SYSTEM_XTINY;
         var xtinyHeight = dc.getFontHeight(xtinyFont);
         dc.drawText(secX, baselineY - tinyHeight - xtinyHeight + 5, xtinyFont, _dayOfWeekStr, Graphics.TEXT_JUSTIFY_LEFT);
-        
+
         // Draw Seconds and calculate Clip
         dc.drawText(secX, baselineY - tinyHeight, tinyFont, secondsStr, Graphics.TEXT_JUSTIFY_LEFT);
         var secWidth = dc.getTextWidthInPixels("00", tinyFont);
@@ -194,36 +214,25 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         _secClipW = secWidth;
         _secClipH = tinyHeight;
 
-        // Sub-window ("Eye")
-        var subWindowX = 144, subWindowY = 31, subWindowR = 28;
-        if (WatchUi has :getSubscreen) {
-            var subscreen = WatchUi.getSubscreen();
-            if (subscreen != null) {
-                subWindowX = subscreen.x + (subscreen.width / 2);
-                subWindowY = subscreen.y + (subscreen.height / 2);
-                subWindowR = subscreen.width / 2 - 5;
-            }
-        }
-
         if (_stepsProgress > 0) {
             dc.setPenWidth(5);
-            dc.drawArc(subWindowX, subWindowY, subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
+            dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
         }
 
-        dc.drawText(subWindowX, subWindowY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.drawText(_subWindowX, _subWindowY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
         var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
-        _hrClipX = subWindowX - hrWidth / 2;
-        _hrClipY = subWindowY - hrHeight / 2;
+        _hrClipX = _subWindowX - hrWidth / 2;
+        _hrClipY = _subWindowY - hrHeight / 2;
         _hrClipW = hrWidth;
         _hrClipH = hrHeight;
-        
+
         // Battery Icon
         var batX = secX + 25, batY = baselineY - 34, batW = 16, batH = 28;
         dc.setPenWidth(1);
         dc.drawRectangle(batX, batY, batW, batH);
         dc.fillRectangle(batX + 4, batY - 4, 8, 4); // Tip
-        
+
         var batteryFill = (_batteryLevel / 100.0 * (batH - 4)).toNumber();
         if (batteryFill > 0) {
             dc.fillRectangle(batX + 2, batY + batH - 2 - batteryFill, batW - 4, batteryFill);
@@ -234,12 +243,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         renderHrGraph(dc, 5, 130, 120, 40);
     }
 
-    function onPartialUpdate(dc as Graphics.Dc) as Void {
-        if (!_isSleep) { return; }
-
-        var clockTime = System.getClockTime();
-        var secondsStr = clockTime.sec.format("%02d");
-        var heartRate = getHeartRateString();
+    // Cheap path: refreshes only the regions that change every second
+    // (seconds text, heart rate) without touching the rest of the screen.
+    private function drawDynamicRegions(dc as Graphics.Dc, currentSecond as Number, heartRate as String) as Void {
+        var secondsStr = currentSecond.format("%02d");
 
         // Update Seconds
         dc.setClip(_secClipX, _secClipY, _secClipW, _secClipH);
@@ -254,8 +261,16 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         dc.clear();
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(_hrClipX + _hrClipW/2, _hrClipY + _hrClipH/2, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        
+
         dc.clearClip();
+    }
+
+    function onPartialUpdate(dc as Graphics.Dc) as Void {
+        if (!_isSleep) { return; }
+
+        var clockTime = System.getClockTime();
+        var heartRate = getHeartRateString();
+        drawDynamicRegions(dc, clockTime.sec, heartRate);
     }
 
     private function getHeartRateString() as String {
@@ -280,11 +295,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var battery = systemStats.battery;
         _batteryLevel = battery;
         _batteryStr = battery.format("%d") + "%";
-        
+
         var lastChargeLevel = Storage.getValue("lastChargeLevel");
         var lastChargeTime = Storage.getValue("lastChargeTime");
         var prevBattery = Storage.getValue("prevBattery");
-        
+
         if (lastChargeLevel == null || (prevBattery != null && battery > prevBattery + 1)) {
             lastChargeLevel = battery;
             lastChargeTime = nowTimestamp;

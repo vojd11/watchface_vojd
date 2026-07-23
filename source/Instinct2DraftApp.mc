@@ -5,7 +5,6 @@ class Instinct2DraftApp extends Application.AppBase {
 
     function initialize() {
         AppBase.initialize();
-        System.println("App initialize");
     }
 
     // onStart() is called on application start up
@@ -18,7 +17,6 @@ class Instinct2DraftApp extends Application.AppBase {
 
     // Return the initial view of your application here
     function getInitialView() {
-        System.println("getInitialView called");
         return [ new Instinct2DraftView() ];
     }
 
