@@ -41,8 +41,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _subWindowY as Number = 31;
     private var _subWindowR as Number = 28;
 
-    // Partial/dynamic update state
-    private var _isSleep as Boolean = false;
+    // Dynamic (per-second, while awake) update state
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
     private var _secClipW as Number = 0;
@@ -271,13 +270,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         dc.clearClip();
     }
 
-    function onPartialUpdate(dc as Graphics.Dc) as Void {
-        if (!_isSleep) { return; }
-
-        var clockTime = System.getClockTime();
-        var heartRate = getHeartRateString();
-        drawDynamicRegions(dc, clockTime.sec, heartRate);
-    }
+    // Intentionally no onPartialUpdate: without it, the system calls
+    // onUpdate() only once per minute while the watch is asleep instead of
+    // waking the CPU every second to tick seconds/HR on an always-on
+    // display. Seconds still tick normally while awake, via onUpdate above.
 
     private function getHeartRateString() as String {
         var heartRate = "--";
@@ -411,13 +407,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     // The user has just looked at their watch. Timers and animations may be started here.
     function onExitSleep() as Void {
-        _isSleep = false;
         WatchUi.requestUpdate();
     }
 
     // Terminate any active timers and prepare for slow updates.
     function onEnterSleep() as Void {
-        _isSleep = true;
         WatchUi.requestUpdate();
     }
 
