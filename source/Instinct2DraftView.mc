@@ -11,6 +11,14 @@ import Toybox.Application.Storage;
 
 class Instinct2DraftView extends WatchUi.WatchFace {
 
+    // How often the seconds / heart rate readouts are actually repainted.
+    // The system still wakes us every second - that cadence is fixed - but
+    // we only touch the display on every Nth of those wake-ups. Set to 1
+    // for a smoothly ticking seconds display, higher to trade that for
+    // battery. 60 must stay divisible by this so the cadence lines up with
+    // the minute boundary.
+    private const UPDATE_INTERVAL_SEC = 5;
+
     var timeFontResource;
 
     // Cached data members
@@ -51,6 +59,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     // Partial/dynamic update state
     private var _isSleep as Boolean = false;
+    // Defaults to true deliberately: onShow() always runs before the first
+    // onUpdate(), but if that ever failed to hold, defaulting to false
+    // would leave a permanently blank watch face - far worse than one
+    // stray draw.
+    private var _isVisible as Boolean = true;
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
     private var _secClipW as Number = 0;
@@ -95,14 +108,22 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // the state of this View and prepare it to be shown. This includes
     // loading resources into memory.
     function onShow() as Void {
-        // The screen may have been overwritten by another app/widget while
-        // we were hidden, so force a full redraw on the next onUpdate()
-        // instead of taking the cheap seconds/HR-only patch path.
+        _isVisible = true;
+
+        // The screen may have been overwritten by another app, widget or a
+        // system alert while we were hidden, so force a full redraw on the
+        // next onUpdate() instead of taking the cheap seconds/HR-only patch
+        // path, which would leave whatever covered us still on screen.
         _lastMinute = -1;
     }
 
     // Update the view
     function onUpdate(dc as Graphics.Dc) as Void {
+        // Never paint while something else owns the display. The cheap path
+        // below only patches small rectangles, so drawing here would leave
+        // boxes of our content sitting on top of a system screen.
+        if (!_isVisible) { return; }
+
         var clockTime = System.getClockTime();
         var currentSecond = clockTime.sec;
         var currentMinute = clockTime.min;
@@ -201,9 +222,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             var heartRate = getHeartRateString();
             _cachedHeartRate = heartRate;
             drawFullFrame(dc, currentSecond, heartRate);
-        } else {
+        } else if (currentSecond % UPDATE_INTERVAL_SEC == 0) {
             drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(currentSecond));
         }
+        // Otherwise draw nothing at all: the display keeps what it already
+        // has, and we skip the clip/clear/drawText work entirely.
     }
 
     private function drawFullFrame(dc as Graphics.Dc, currentSecond as Number, heartRate as String) as Void {
@@ -337,18 +360,23 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     }
 
     function onPartialUpdate(dc as Graphics.Dc) as Void {
-        if (!_isSleep) { return; }
+        if (!_isVisible || !_isSleep) { return; }
 
+        // Still woken every second by the system, but bail out before doing
+        // any work on the seconds we aren't painting. This early return is
+        // where the sleep-mode saving comes from.
         var clockTime = System.getClockTime();
+        if (clockTime.sec % UPDATE_INTERVAL_SEC != 0) { return; }
+
         drawDynamicRegions(dc, clockTime.sec, getCachedHeartRateString(clockTime.sec));
     }
 
     // onPartialUpdate runs under a hard execution-time budget, and
     // getHeartRateString() can fall through to building a history iterator -
-    // exactly what happens while the watch sits idle on the wrist. Re-read
-    // the sensor every 5 seconds instead of every single second.
+    // exactly what happens while the watch sits idle on the wrist. Tie the
+    // sensor re-read to the same cadence as the repaint.
     private function getCachedHeartRateString(currentSecond as Number) as String {
-        if (_cachedHeartRate.equals("") || currentSecond % 5 == 0) {
+        if (_cachedHeartRate.equals("") || currentSecond % UPDATE_INTERVAL_SEC == 0) {
             _cachedHeartRate = getHeartRateString();
         }
         return _cachedHeartRate;
@@ -482,6 +510,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // state of this View here. This includes freeing resources from
     // memory.
     function onHide() as Void {
+        // Something else owns the display now (app, widget, system alert).
+        // Stop painting: our clip-based updates would otherwise punch
+        // rectangles of watch face content into whatever is covering us.
+        _isVisible = false;
     }
 
     // The user has just looked at their watch. Timers and animations may be started here.
