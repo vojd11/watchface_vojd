@@ -41,7 +41,8 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _subWindowY as Number = 31;
     private var _subWindowR as Number = 28;
 
-    // Dynamic (per-second, while awake) update state
+    // Partial/dynamic update state
+    private var _isSleep as Boolean = false;
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
     private var _secClipW as Number = 0;
@@ -85,6 +86,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // the state of this View and prepare it to be shown. This includes
     // loading resources into memory.
     function onShow() as Void {
+        // The screen may have been overwritten by another app/widget while
+        // we were hidden, so force a full redraw on the next onUpdate()
+        // instead of taking the cheap seconds/HR-only patch path.
+        _lastMinute = -1;
     }
 
     // Update the view
@@ -270,10 +275,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         dc.clearClip();
     }
 
-    // Intentionally no onPartialUpdate: without it, the system calls
-    // onUpdate() only once per minute while the watch is asleep instead of
-    // waking the CPU every second to tick seconds/HR on an always-on
-    // display. Seconds still tick normally while awake, via onUpdate above.
+    function onPartialUpdate(dc as Graphics.Dc) as Void {
+        if (!_isSleep) { return; }
+
+        var clockTime = System.getClockTime();
+        var heartRate = getHeartRateString();
+        drawDynamicRegions(dc, clockTime.sec, heartRate);
+    }
 
     private function getHeartRateString() as String {
         var heartRate = "--";
@@ -407,11 +415,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     // The user has just looked at their watch. Timers and animations may be started here.
     function onExitSleep() as Void {
+        _isSleep = false;
         WatchUi.requestUpdate();
     }
 
     // Terminate any active timers and prepare for slow updates.
     function onEnterSleep() as Void {
+        _isSleep = true;
         WatchUi.requestUpdate();
     }
 
