@@ -267,6 +267,16 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             dc.setClip(_hrClipX, _hrClipY, _hrClipW, _hrClipH);
             dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
             dc.clear();
+
+            // The HR clip rectangle overlaps the step-progress ring around
+            // it, so the clear above also erases the slice of ring inside
+            // it. Redraw that slice (clipped the same way) before the text.
+            if (_stepsProgress > 0) {
+                dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+                dc.setPenWidth(5);
+                dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
+            }
+
             dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
             dc.drawText(_hrClipX + _hrClipW/2, _hrClipY + _hrClipH/2, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
             _lastDrawnHeartRate = heartRate;
