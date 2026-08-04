@@ -7,7 +7,6 @@ import Toybox.Time;
 import Toybox.Time.Gregorian;
 import Toybox.ActivityMonitor;
 import Toybox.Weather;
-import Toybox.Math;
 import Toybox.Application.Storage;
 
 class Instinct2DraftView extends WatchUi.WatchFace {
@@ -264,28 +263,17 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
         dc.drawText(_subWindowX, _subWindowY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         // Size the HR clip box for the widest value we can show ("888"), so
-        // a 2 -> 3 digit change can never get cut off. The raw font height
-        // carries a lot of padding above/below the digits, which pushed the
-        // box corners out past the progress ring - clamp the height so the
-        // corners sit inside the ring's inner edge, but keep a floor so we
-        // never clip the glyphs themselves.
+        // a 2 -> 3 digit change can never get cut off, and keep the full
+        // font height. Don't try to shrink this box to dodge the progress
+        // ring: the digits' ink sits lower than the box centre, so clamping
+        // the height symmetrically shaves the bottoms off glyphs like 4 and
+        // 7. The ring is restored by repainting it in drawDynamicRegions.
         var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
         var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
-        var halfW = hrWidth / 2;
-        var halfH = hrHeight / 2;
-
-        var innerR = _subWindowR - 4; // ring pen is 5, so it spans R-2.5..R+2.5
-        if (innerR > halfW + 1) {
-            var maxHalfH = Math.sqrt((innerR * innerR - halfW * halfW).toFloat()).toNumber();
-            var minHalfH = (hrHeight * 3) / 8; // don't shrink below ~75% of the font box
-            if (maxHalfH < minHalfH) { maxHalfH = minHalfH; }
-            if (halfH > maxHalfH) { halfH = maxHalfH; }
-        }
-
-        _hrClipX = _subWindowX - halfW;
-        _hrClipY = _subWindowY - halfH;
-        _hrClipW = halfW * 2;
-        _hrClipH = halfH * 2;
+        _hrClipX = _subWindowX - hrWidth / 2;
+        _hrClipY = _subWindowY - hrHeight / 2;
+        _hrClipW = hrWidth;
+        _hrClipH = hrHeight;
         _lastDrawnHeartRate = heartRate;
 
         // Battery Icon
@@ -323,10 +311,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
             dc.clear();
 
-            // The clip box is now clamped to sit inside the progress ring,
-            // but keep repainting the ring slice as a cheap guard in case a
-            // device's font metrics still push the corners into it. Only
-            // runs when the HR value actually changes, not every second.
+            // The clip box has to cover the full font box to avoid clipping
+            // glyphs, so its corners overlap the progress ring and the clear
+            // above takes a bite out of it. Repaint the ring slice inside
+            // the same clip. Only runs when HR changes, not every second.
             if (_stepsProgress > 0) {
                 dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
                 dc.setPenWidth(5);
