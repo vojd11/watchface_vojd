@@ -116,11 +116,9 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         // (manual clock change, travel, DST). Only worth checking when the
         // minute rolls over - these never need sub-minute detection - and
         // both reads are cheap compared to Gregorian.info().
-        var now as Time.Moment or Null = null;
         var calendarChanged = false;
         if (minuteChanged) {
-            now = Time.now();
-            var utcDay = now.value() / 86400;
+            var utcDay = Time.now().value() / 86400;
             var tzOffset = clockTime.timeZoneOffset;
             if (utcDay != _lastUtcDay || tzOffset != _lastTzOffset) {
                 _lastUtcDay = utcDay;
@@ -135,7 +133,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         if (hourChanged) {
             _lastHour = currentHour;
 
-            if (now == null) { now = Time.now(); }
+            var now = Time.now();
             _hoursStr = currentHour.format("%02d");
 
             var infoShort = Gregorian.info(now, Time.FORMAT_SHORT);
