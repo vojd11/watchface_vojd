@@ -261,7 +261,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
         }
 
-        dc.drawText(_subWindowX, _subWindowY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        // The digits' ink sits low within the font box, so vertically
+        // centring on the sub-window centre reads as slightly too low.
+        // Nudge the text up; the clip box moves with it so the per-second
+        // path (which draws at the clip centre) stays in step.
+        var hrTextY = _subWindowY - 3;
+        dc.drawText(_subWindowX, hrTextY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
         // Size the HR clip box for the widest value we can show ("888"), so
         // a 2 -> 3 digit change can never get cut off, and keep the full
         // font height. Don't try to shrink this box to dodge the progress
@@ -271,7 +277,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
         var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
         _hrClipX = _subWindowX - hrWidth / 2;
-        _hrClipY = _subWindowY - hrHeight / 2;
+        _hrClipY = hrTextY - hrHeight / 2;
         _hrClipW = hrWidth;
         _hrClipH = hrHeight;
         _lastDrawnHeartRate = heartRate;
