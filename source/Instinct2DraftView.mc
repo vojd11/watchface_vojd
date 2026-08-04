@@ -7,6 +7,7 @@ import Toybox.Time;
 import Toybox.Time.Gregorian;
 import Toybox.ActivityMonitor;
 import Toybox.Weather;
+import Toybox.Math;
 import Toybox.Application.Storage;
 
 class Instinct2DraftView extends WatchUi.WatchFace {
@@ -17,6 +18,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _lastMinute as Number = -1;
     private var _lastHour as Number = -1;
 
+    // Cheap discontinuity detection for the date line: a manual clock
+    // change, travel or DST can move the calendar date or the timezone
+    // without moving the hour. Tracking these two lets us catch that
+    // without paying for a Gregorian.info() call on every update.
+    private var _lastUtcDay as Number = -1;
+    private var _lastTzOffset as Number = -1;
+
     // Per-minute cached data
     private var _minutesStr as String = "";
     private var _stepsStr as String = "0";
@@ -25,6 +33,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hrSampleCount as Number = 0;
     private var _hrMin as Number = 0;
     private var _hrMax as Number = 0;
+    private var _minutesSinceGraphUpdate as Number = 0;
 
     // Per-hour/change cached data
     private var _hoursStr as String = "";
@@ -52,6 +61,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hrClipW as Number = 0;
     private var _hrClipH as Number = 0;
     private var _lastDrawnHeartRate as String = "";
+    private var _cachedHeartRate as String = "";
 
     function initialize() {
         WatchFace.initialize();
@@ -100,14 +110,32 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var currentHour = clockTime.hour;
 
         var forceUpdate = (_lastMinute == -1);
-        var hourChanged = forceUpdate || currentHour != _lastHour;
         var minuteChanged = forceUpdate || currentMinute != _lastMinute;
+
+        // Catch date/timezone discontinuities that don't move the hour
+        // (manual clock change, travel, DST). Only worth checking when the
+        // minute rolls over - these never need sub-minute detection - and
+        // both reads are cheap compared to Gregorian.info().
+        var now as Time.Moment or Null = null;
+        var calendarChanged = false;
+        if (minuteChanged) {
+            now = Time.now();
+            var utcDay = now.value() / 86400;
+            var tzOffset = clockTime.timeZoneOffset;
+            if (utcDay != _lastUtcDay || tzOffset != _lastTzOffset) {
+                _lastUtcDay = utcDay;
+                _lastTzOffset = tzOffset;
+                calendarChanged = true;
+            }
+        }
+
+        var hourChanged = forceUpdate || currentHour != _lastHour || calendarChanged;
 
         // --- HOURLY / DAILY / CHANGE UPDATES ---
         if (hourChanged) {
             _lastHour = currentHour;
 
-            var now = Time.now();
+            if (now == null) { now = Time.now(); }
             _hoursStr = currentHour.format("%02d");
 
             var infoShort = Gregorian.info(now, Time.FORMAT_SHORT);
@@ -155,20 +183,29 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 if (_stepsProgress > 1.0) { _stepsProgress = 1.0; }
             }
 
-            // Update HR Graph data samples
-            updateHrGraphData();
+            // Update HR Graph data samples. The graph spans 90 minutes
+            // across ~120px (~1.3px per minute), so rebuilding it every
+            // minute re-reads 90 history samples to move the trace by one
+            // pixel. Every 5 minutes is visually indistinguishable and
+            // takes the biggest spike off the minute boundary.
+            if (forceUpdate || _minutesSinceGraphUpdate >= 5) {
+                updateHrGraphData();
+                _minutesSinceGraphUpdate = 0;
+            } else {
+                _minutesSinceGraphUpdate++;
+            }
         }
-
-        var heartRate = getHeartRateString();
 
         // Only pay for a full clear + redraw of every element when something
         // that actually changes the layout (hour/minute) happened. The other
         // ~59 out of 60 calls per minute only need to refresh the seconds and
         // heart rate text, so reuse the cheap clip-based path for those.
         if (hourChanged || minuteChanged) {
+            var heartRate = getHeartRateString();
+            _cachedHeartRate = heartRate;
             drawFullFrame(dc, currentSecond, heartRate);
         } else {
-            drawDynamicRegions(dc, currentSecond, heartRate);
+            drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(currentSecond));
         }
     }
 
@@ -209,7 +246,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var secX = minX + minutesWidth + 4;
         var xtinyFont = Graphics.FONT_SYSTEM_XTINY;
         var xtinyHeight = dc.getFontHeight(xtinyFont);
-        dc.drawText(secX, baselineY - tinyHeight - xtinyHeight + 5, xtinyFont, _dayOfWeekStr, Graphics.TEXT_JUSTIFY_LEFT);
+        // No +5 nudge here: that pushed the day-of-week's bottom edge into
+        // the seconds clip box below it, so the per-second clear was
+        // shaving its last few pixel rows.
+        dc.drawText(secX, baselineY - tinyHeight - xtinyHeight, xtinyFont, _dayOfWeekStr, Graphics.TEXT_JUSTIFY_LEFT);
 
         // Draw Seconds and calculate Clip
         dc.drawText(secX, baselineY - tinyHeight, tinyFont, secondsStr, Graphics.TEXT_JUSTIFY_LEFT);
@@ -225,12 +265,29 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         }
 
         dc.drawText(_subWindowX, _subWindowY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        // Size the HR clip box for the widest value we can show ("888"), so
+        // a 2 -> 3 digit change can never get cut off. The raw font height
+        // carries a lot of padding above/below the digits, which pushed the
+        // box corners out past the progress ring - clamp the height so the
+        // corners sit inside the ring's inner edge, but keep a floor so we
+        // never clip the glyphs themselves.
         var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
         var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
-        _hrClipX = _subWindowX - hrWidth / 2;
-        _hrClipY = _subWindowY - hrHeight / 2;
-        _hrClipW = hrWidth;
-        _hrClipH = hrHeight;
+        var halfW = hrWidth / 2;
+        var halfH = hrHeight / 2;
+
+        var innerR = _subWindowR - 4; // ring pen is 5, so it spans R-2.5..R+2.5
+        if (innerR > halfW + 1) {
+            var maxHalfH = Math.sqrt((innerR * innerR - halfW * halfW).toFloat()).toNumber();
+            var minHalfH = (hrHeight * 3) / 8; // don't shrink below ~75% of the font box
+            if (maxHalfH < minHalfH) { maxHalfH = minHalfH; }
+            if (halfH > maxHalfH) { halfH = maxHalfH; }
+        }
+
+        _hrClipX = _subWindowX - halfW;
+        _hrClipY = _subWindowY - halfH;
+        _hrClipW = halfW * 2;
+        _hrClipH = halfH * 2;
         _lastDrawnHeartRate = heartRate;
 
         // Battery Icon
@@ -268,13 +325,15 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
             dc.clear();
 
-            // The HR clip rectangle overlaps the step-progress ring around
-            // it, so the clear above also erases the slice of ring inside
-            // it. Redraw that slice (clipped the same way) before the text.
+            // The clip box is now clamped to sit inside the progress ring,
+            // but keep repainting the ring slice as a cheap guard in case a
+            // device's font metrics still push the corners into it. Only
+            // runs when the HR value actually changes, not every second.
             if (_stepsProgress > 0) {
                 dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
                 dc.setPenWidth(5);
                 dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
+                dc.setPenWidth(1); // don't leak pen state into later draws
             }
 
             dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
@@ -289,8 +348,18 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         if (!_isSleep) { return; }
 
         var clockTime = System.getClockTime();
-        var heartRate = getHeartRateString();
-        drawDynamicRegions(dc, clockTime.sec, heartRate);
+        drawDynamicRegions(dc, clockTime.sec, getCachedHeartRateString(clockTime.sec));
+    }
+
+    // onPartialUpdate runs under a hard execution-time budget, and
+    // getHeartRateString() can fall through to building a history iterator -
+    // exactly what happens while the watch sits idle on the wrist. Re-read
+    // the sensor every 5 seconds instead of every single second.
+    private function getCachedHeartRateString(currentSecond as Number) as String {
+        if (_cachedHeartRate.equals("") || currentSecond % 5 == 0) {
+            _cachedHeartRate = getHeartRateString();
+        }
+        return _cachedHeartRate;
     }
 
     private function getHeartRateString() as String {
