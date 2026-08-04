@@ -51,6 +51,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
 
     // Partial/dynamic update state
     private var _isSleep as Boolean = false;
+    // Defaults to true deliberately: onShow() always runs before the first
+    // onUpdate(), but if that ever failed to hold, defaulting to false
+    // would leave a permanently blank watch face - far worse than one
+    // stray draw.
+    private var _isVisible as Boolean = true;
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
     private var _secClipW as Number = 0;
@@ -95,14 +100,22 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // the state of this View and prepare it to be shown. This includes
     // loading resources into memory.
     function onShow() as Void {
-        // The screen may have been overwritten by another app/widget while
-        // we were hidden, so force a full redraw on the next onUpdate()
-        // instead of taking the cheap seconds/HR-only patch path.
+        _isVisible = true;
+
+        // The screen may have been overwritten by another app, widget or a
+        // system alert while we were hidden, so force a full redraw on the
+        // next onUpdate() instead of taking the cheap seconds/HR-only patch
+        // path, which would leave whatever covered us still on screen.
         _lastMinute = -1;
     }
 
     // Update the view
     function onUpdate(dc as Graphics.Dc) as Void {
+        // Never paint while something else owns the display. The cheap path
+        // below only patches small rectangles, so drawing here would leave
+        // boxes of our content sitting on top of a system screen.
+        if (!_isVisible) { return; }
+
         var clockTime = System.getClockTime();
         var currentSecond = clockTime.sec;
         var currentMinute = clockTime.min;
@@ -337,7 +350,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     }
 
     function onPartialUpdate(dc as Graphics.Dc) as Void {
-        if (!_isSleep) { return; }
+        if (!_isVisible || !_isSleep) { return; }
 
         var clockTime = System.getClockTime();
         drawDynamicRegions(dc, clockTime.sec, getCachedHeartRateString(clockTime.sec));
@@ -482,6 +495,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // state of this View here. This includes freeing resources from
     // memory.
     function onHide() as Void {
+        // Something else owns the display now (app, widget, system alert).
+        // Stop painting: our clip-based updates would otherwise punch
+        // rectangles of watch face content into whatever is covering us.
+        _isVisible = false;
     }
 
     // The user has just looked at their watch. Timers and animations may be started here.
