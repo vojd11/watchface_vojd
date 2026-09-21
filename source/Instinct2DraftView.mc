@@ -42,6 +42,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hiLowStr as String = "--/--";
     private var _batteryStr as String = "0%";
     private var _batteryLevel as Float = 0.0;
+    private var _wasCharging as Boolean = false;
     private var _drainStr as String = "--%/d";
 
     // Static layout, computed once
@@ -157,6 +158,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 infoShort.year
             ]);
 
+            // Clear unavailable fields rather than retaining stale weather.
+            _tempStr = "--";
+            _hiLowStr = "--/--";
+
             // Weather Update
             if (Toybox has :Weather) {
                 var weather = Weather.getCurrentConditions();
@@ -172,15 +177,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                     }
                 }
             }
-
-            // Battery Update (Hourly or if charging state changes)
-            updateBatteryLevel(now.value());
         }
 
         // --- MINUTELY UPDATES ---
         if (minuteChanged) {
             _lastMinute = currentMinute;
             _minutesStr = currentMinute.format("%02d");
+            updateBatteryLevel(Time.now().value());
 
             // Steps
             var stepGoal = 5000;
@@ -193,16 +196,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 if (_stepsProgress > 1.0) { _stepsProgress = 1.0; }
             }
 
-            // Update HR Graph data samples. The graph spans 90 minutes
-            // across ~120px (~1.3px per minute), so rebuilding it every
-            // minute re-reads 90 history samples to move the trace by one
-            // pixel. Every 5 minutes is visually indistinguishable and
-            // takes the biggest spike off the minute boundary.
+            // Refresh the 90-minute history every five minute boundaries.
+            _minutesSinceGraphUpdate++;
             if (forceUpdate || _minutesSinceGraphUpdate >= 5) {
                 updateHrGraphData();
                 _minutesSinceGraphUpdate = 0;
-            } else {
-                _minutesSinceGraphUpdate++;
             }
         }
 
@@ -394,15 +392,21 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var lastChargeTime = Storage.getValue("lastChargeTime");
         var prevBattery = Storage.getValue("prevBattery");
 
-        if (lastChargeLevel == null || (prevBattery != null && battery > prevBattery + 1)) {
+        var charging = systemStats.charging;
+        // Track the baseline through charging and reset when disconnected.
+        // The level-rise check also catches charging while this face was hidden.
+        if (lastChargeLevel == null || lastChargeTime == null || charging || _wasCharging ||
+            (prevBattery != null && battery > prevBattery + 1)) {
             lastChargeLevel = battery;
             lastChargeTime = nowTimestamp;
             Storage.setValue("lastChargeLevel", lastChargeLevel);
             Storage.setValue("lastChargeTime", lastChargeTime);
         }
         Storage.setValue("prevBattery", battery);
+        _wasCharging = charging;
+        _drainStr = "--%/d";
 
-        if (lastChargeTime != null && nowTimestamp > lastChargeTime) {
+        if (!charging && lastChargeTime != null && nowTimestamp > lastChargeTime) {
             var daysPassed = (nowTimestamp - lastChargeTime).toFloat() / 86400.0;
             if (daysPassed > 0.01) {
                 var drainPerDay = (lastChargeLevel - battery) / daysPassed;
@@ -412,32 +416,47 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     }
 
     private function updateHrGraphData() as Void {
-        if (ActivityMonitor has :getHeartRateHistory) {
-            var hrHistory = ActivityMonitor.getHeartRateHistory(90, true);
-            if (hrHistory != null) {
-                var min = 255, max = 0, count = 0;
-                var sample = hrHistory.next();
-                while (sample != null && count < 90) {
-                    var hr = sample.heartRate;
-                    if (hr != null && hr != ActivityMonitor.INVALID_HR_SAMPLE) {
-                        _hrSamples[count] = hr;
-                        if (hr < min) { min = hr; }
-                        if (hr > max) { max = hr; }
-                    } else {
-                        _hrSamples[count] = null;
-                    }
-                    sample = hrHistory.next();
-                    count++;
+        _hrSampleCount = 0;
+        _hrMin = 0;
+        _hrMax = 0;
+        for (var i = 0; i < 90; i++) { _hrSamples[i] = null; }
+
+        if (!(ActivityMonitor has :getHeartRateHistory)) { return; }
+        var now = Time.now().value();
+        var hrHistory = ActivityMonitor.getHeartRateHistory(new Time.Duration(90 * 60), true);
+
+        var min = 255, max = 0, validCount = 0;
+        var sample = hrHistory.next();
+        while (sample != null) {
+            var age = now - sample.when.value();
+            var hr = sample.heartRate;
+            // Timestamp-based minute buckets preserve gaps and the time scale
+            // regardless of the device's history sampling interval. Keep the
+            // newest valid reading in each bucket (the iterator is newest first).
+            if (age >= 0 && age < 90 * 60 && hr != null && hr != ActivityMonitor.INVALID_HR_SAMPLE) {
+                var bucket = age / 60;
+                if (_hrSamples[bucket] == null) {
+                    _hrSamples[bucket] = hr;
+                    if (hr < min) { min = hr; }
+                    if (hr > max) { max = hr; }
+                    validCount++;
                 }
-                _hrSampleCount = count;
-                _hrMin = min;
-                _hrMax = max;
             }
+            sample = hrHistory.next();
+        }
+        if (validCount > 0) {
+            _hrSampleCount = 90;
+            _hrMin = min;
+            _hrMax = max;
         }
     }
 
     private function renderHrGraph(dc as Graphics.Dc, x as Number, y as Number, width as Number, height as Number) as Void {
-        if (_hrSampleCount == 0) { return; }
+        if (_hrSampleCount == 0) {
+            dc.drawText(x + width / 2, y + height / 2, Graphics.FONT_XTINY,
+                "HR --", Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            return;
+        }
 
         var displayMin = _hrMin;
         var displayMax = _hrMax;
@@ -483,6 +502,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             if (hr != null) {
                 var currentX = x + (width - 1) - (i.toFloat() * (width - 1) / 89.0).toNumber();
                 var currentY = y + height - ((hr - padMinHr).toFloat() / range * height).toNumber();
+                dc.drawPoint(currentX, currentY);
                 if (lastX != -1) { dc.drawLine(lastX, lastY, currentX, currentY); }
                 lastX = currentX; lastY = currentY;
             } else {
