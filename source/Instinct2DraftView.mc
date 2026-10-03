@@ -12,6 +12,17 @@ import Toybox.Application.Storage;
 class Instinct2DraftView extends WatchUi.WatchFace {
 
     var timeFontResource;
+    private var _drawnTime as String = "";
+    private var _drawnSeconds as String = "";
+    private var _drawnWeather as String = "";
+    private var _drawnStats as String = "";
+    private var _drawnDate as String = "";
+    private var _drawnDay as String = "";
+    private var _drawnBattery as String = "";
+    private var _drawnProgress as Number = -1;
+    private var _timeDigitWidth as Number = 0;
+    private var _secondDigitWidth as Number = 0;
+    private var _graphDirty as Boolean = true;
 
     // Cached data members
     private var _lastMinute as Number = -1;
@@ -42,6 +53,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hiLowStr as String = "--/--";
     private var _batteryStr as String = "0%";
     private var _batteryLevel as Float = 0.0;
+    private var _wasCharging as Boolean = false;
     private var _drainStr as String = "--%/d";
 
     // Static layout, computed once
@@ -58,7 +70,6 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _isVisible as Boolean = true;
     private var _secClipX as Number = 0;
     private var _secClipY as Number = 0;
-    private var _secClipW as Number = 0;
     private var _secClipH as Number = 0;
     private var _hrClipX as Number = 0;
     private var _hrClipY as Number = 0;
@@ -84,6 +95,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // Load your resources here
     function onLayout(dc as Dc) as Void {
         setLayout(null);
+        _lastMinute = -1;
 
         // Sub-window ("Eye") geometry is fixed per device; compute once
         if (WatchUi has :getSubscreen) {
@@ -157,6 +169,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 infoShort.year
             ]);
 
+            // Clear unavailable fields rather than retaining stale weather.
+            _tempStr = "--";
+            _hiLowStr = "--/--";
+
             // Weather Update
             if (Toybox has :Weather) {
                 var weather = Weather.getCurrentConditions();
@@ -172,15 +188,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                     }
                 }
             }
-
-            // Battery Update (Hourly or if charging state changes)
-            updateBatteryLevel(now.value());
         }
 
         // --- MINUTELY UPDATES ---
         if (minuteChanged) {
             _lastMinute = currentMinute;
             _minutesStr = currentMinute.format("%02d");
+            updateBatteryLevel(Time.now().value());
 
             // Steps
             var stepGoal = 5000;
@@ -193,38 +207,35 @@ class Instinct2DraftView extends WatchUi.WatchFace {
                 if (_stepsProgress > 1.0) { _stepsProgress = 1.0; }
             }
 
-            // Update HR Graph data samples. The graph spans 90 minutes
-            // across ~120px (~1.3px per minute), so rebuilding it every
-            // minute re-reads 90 history samples to move the trace by one
-            // pixel. Every 5 minutes is visually indistinguishable and
-            // takes the biggest spike off the minute boundary.
+            // Refresh the 90-minute history every five minute boundaries.
+            _minutesSinceGraphUpdate++;
             if (forceUpdate || _minutesSinceGraphUpdate >= 5) {
                 updateHrGraphData();
                 _minutesSinceGraphUpdate = 0;
-            } else {
-                _minutesSinceGraphUpdate++;
             }
         }
 
-        // Only pay for a full clear + redraw of every element when something
-        // that actually changes the layout (hour/minute) happened. The other
-        // ~59 out of 60 calls per minute only need to refresh the seconds and
-        // heart rate text, so reuse the cheap clip-based path for those.
+        // Refresh data at minute boundaries, but repaint only changed regions.
+        // Full restoration is reserved for onShow/onLayout invalidation.
         if (hourChanged || minuteChanged) {
             var heartRate = getHeartRateString();
             _cachedHeartRate = heartRate;
-            drawFullFrame(dc, currentSecond, heartRate);
+            drawChangedFrame(dc, currentSecond, heartRate, forceUpdate);
         } else {
             drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(currentSecond));
         }
     }
 
-    private function drawFullFrame(dc as Graphics.Dc, currentSecond as Number, heartRate as String) as Void {
-        var secondsStr = currentSecond.format("%02d");
-
-        dc.clearClip(); // Ensure we are not drawing with a clip from partial update
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
-        dc.clear();
+    private function drawChangedFrame(dc as Graphics.Dc, currentSecond as Number, heartRate as String, force as Boolean) as Void {
+        dc.clearClip();
+        if (force) {
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
+            dc.clear();
+            _drawnTime = "";
+            _drawnSeconds = "";
+            _timeDigitWidth = digitWidth(dc, timeFontResource);
+            _secondDigitWidth = digitWidth(dc, Graphics.FONT_TINY);
+        }
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
 
         var baselineY = dc.getHeight() / 2 + 30;
@@ -233,95 +244,167 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var timeHeight = dc.getFontHeight(timeFont);
         var tinyHeight = dc.getFontHeight(tinyFont);
 
-        // Top Stats
+        // Independent regions have fixed bounds so shrinking strings erase cleanly.
         var topFont = Graphics.FONT_XTINY;
-        dc.drawText(25, 5, topFont, _tempStr, Graphics.TEXT_JUSTIFY_LEFT);
-        var tempWidth = dc.getTextWidthInPixels(_tempStr, topFont);
-        dc.drawText(25 + tempWidth + 2, 5, topFont, _hiLowStr, Graphics.TEXT_JUSTIFY_LEFT);
-        dc.drawText(20, 20, topFont, _stepsStr, Graphics.TEXT_JUSTIFY_LEFT);
+        var weatherKey = _tempStr + " " + _hiLowStr;
+        if (force || !weatherKey.equals(_drawnWeather)) {
+            clearRegion(dc, 0, 0, 113, 20);
+            dc.drawText(25, 5, topFont, weatherKey, Graphics.TEXT_JUSTIFY_LEFT);
+            _drawnWeather = weatherKey;
+        }
+        var statsKey = _stepsStr + " " + _drainStr;
+        if (force || !statsKey.equals(_drawnStats)) {
+            clearRegion(dc, 0, 20, 113, 20);
+            dc.drawText(20, 20, topFont, _stepsStr, Graphics.TEXT_JUSTIFY_LEFT);
+            dc.drawText(60, 20, topFont, _drainStr, Graphics.TEXT_JUSTIFY_LEFT);
+            _drawnStats = statsKey;
+        }
+        dc.clearClip();
 
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(60, 20, topFont, _drainStr, Graphics.TEXT_JUSTIFY_LEFT);
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-
-        // Date & Time
-        dc.drawText(0, baselineY - timeHeight - 5, tinyFont, _dateStr, Graphics.TEXT_JUSTIFY_LEFT);
-        dc.drawText(0, baselineY - timeHeight, timeFont, _hoursStr, Graphics.TEXT_JUSTIFY_LEFT);
-        var hoursWidth = dc.getTextWidthInPixels(_hoursStr, timeFont);
-
-        var minX = hoursWidth;
-        dc.drawText(minX, baselineY - timeHeight, timeFont, _minutesStr, Graphics.TEXT_JUSTIFY_LEFT);
-        var minutesWidth = dc.getTextWidthInPixels(_minutesStr, timeFont);
-
-        var secX = minX + minutesWidth + 4;
+        var timeY = baselineY - timeHeight;
+        var secX = 4 * _timeDigitWidth + 4;
         var xtinyFont = Graphics.FONT_SYSTEM_XTINY;
         var xtinyHeight = dc.getFontHeight(xtinyFont);
-        // No +5 nudge here: that pushed the day-of-week's bottom edge into
-        // the seconds clip box below it, so the per-second clear was
-        // shaving its last few pixel rows.
-        dc.drawText(secX, baselineY - tinyHeight - xtinyHeight, xtinyFont, _dayOfWeekStr, Graphics.TEXT_JUSTIFY_LEFT);
-
-        // Draw Seconds and calculate Clip
-        dc.drawText(secX, baselineY - tinyHeight, tinyFont, secondsStr, Graphics.TEXT_JUSTIFY_LEFT);
-        var secWidth = dc.getTextWidthInPixels("00", tinyFont);
+        var timeText = _hoursStr + _minutesStr;
+        if (force || !_dateStr.equals(_drawnDate)) {
+            clearRegion(dc, 0, timeY - 5, 4 * _timeDigitWidth, tinyHeight);
+            dc.drawText(0, timeY - 5, tinyFont, _dateStr, Graphics.TEXT_JUSTIFY_LEFT);
+            // The date's font box overlaps the top of the large digits.
+            // Restore their intersecting pixels after clearing the date.
+            for (var d = 0; d < 4; d++) {
+                dc.drawText(d * _timeDigitWidth, timeY, timeFont,
+                    timeText.substring(d, d + 1), Graphics.TEXT_JUSTIFY_LEFT);
+            }
+            dc.clearClip();
+            _drawnDate = _dateStr;
+        }
+        for (var i = 0; i < 4; i++) {
+            if (force || !_drawnTime.substring(i, i + 1).equals(timeText.substring(i, i + 1))) {
+                clearRegion(dc, i * _timeDigitWidth, timeY, _timeDigitWidth, timeHeight);
+                dc.drawText(i * _timeDigitWidth, timeY, timeFont,
+                    timeText.substring(i, i + 1), Graphics.TEXT_JUSTIFY_LEFT);
+                dc.drawText(0, timeY - 5, tinyFont, _dateStr, Graphics.TEXT_JUSTIFY_LEFT);
+            }
+        }
+        dc.clearClip();
+        _drawnTime = timeText;
+        if (force || !_dayOfWeekStr.equals(_drawnDay)) {
+            clearRegion(dc, secX, baselineY - tinyHeight - xtinyHeight,
+                25, xtinyHeight);
+            dc.drawText(secX, baselineY - tinyHeight - xtinyHeight,
+                xtinyFont, _dayOfWeekStr, Graphics.TEXT_JUSTIFY_LEFT);
+            _drawnDay = _dayOfWeekStr;
+        }
+        dc.clearClip();
         _secClipX = secX;
         _secClipY = baselineY - tinyHeight;
-        _secClipW = secWidth;
         _secClipH = tinyHeight;
+        drawSeconds(dc, currentSecond);
 
-        if (_stepsProgress > 0) {
-            dc.setPenWidth(5);
-            dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
+        var progress = (_stepsProgress * 360).toNumber();
+        if (force || progress != _drawnProgress || !heartRate.equals(_lastDrawnHeartRate)) {
+            clearRegion(dc, 113, 0, dc.getWidth() - 113, 64);
+            // Restore the narrow overlap with the main time/date before the eye.
+            dc.drawText(3 * _timeDigitWidth, timeY, timeFont,
+                timeText.substring(3, 4), Graphics.TEXT_JUSTIFY_LEFT);
+            dc.drawText(0, timeY - 5, tinyFont, _dateStr, Graphics.TEXT_JUSTIFY_LEFT);
+            if (_stepsProgress > 0) {
+                dc.setPenWidth(5);
+                dc.drawArc(_subWindowX, _subWindowY, _subWindowR, Graphics.ARC_CLOCKWISE, 90, (90 - (_stepsProgress * 360)).toNumber());
+            }
+
+            // The digits' ink sits low within the font box, so vertically
+            // centring on the sub-window centre reads as slightly too low.
+            // Nudge the text up; the clip box moves with it so the per-second
+            // path (which draws at the clip centre) stays in step.
+            var hrTextY = _subWindowY - 3;
+            dc.drawText(_subWindowX, hrTextY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+            // Size the HR clip box for the widest value we can show ("888"), so
+            // a 2 -> 3 digit change can never get cut off, and keep the full
+            // font height. Don't try to shrink this box to dodge the progress
+            // ring: the digits' ink sits lower than the box centre, so clamping
+            // the height symmetrically shaves the bottoms off glyphs like 4 and
+            // 7. The ring is restored by repainting it in drawDynamicRegions.
+            var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
+            var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
+            _hrClipX = _subWindowX - hrWidth / 2;
+            _hrClipY = hrTextY - hrHeight / 2;
+            _hrClipW = hrWidth;
+            _hrClipH = hrHeight;
+            _lastDrawnHeartRate = heartRate;
+
+            dc.clearClip();
+            _drawnProgress = progress;
         }
 
-        // The digits' ink sits low within the font box, so vertically
-        // centring on the sub-window centre reads as slightly too low.
-        // Nudge the text up; the clip box moves with it so the per-second
-        // path (which draws at the clip centre) stays in step.
-        var hrTextY = _subWindowY - 3;
-        dc.drawText(_subWindowX, hrTextY, Graphics.FONT_NUMBER_MILD, heartRate, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        // Quantize the key to the actual displayed fill and percentage.
+        var batteryKey = _batteryStr + ":" + (_batteryLevel / 100.0 * 24).toNumber();
+        if (force || !batteryKey.equals(_drawnBattery)) {
+            var batX = secX + 25, batY = baselineY - 34, batW = 16, batH = 28;
+            clearRegion(dc, batX, batY - 4, batW + 1, batH + 5);
+            dc.setPenWidth(1);
+            dc.drawRectangle(batX, batY, batW, batH);
+            dc.fillRectangle(batX + 4, batY - 4, 8, 4); // Tip
 
-        // Size the HR clip box for the widest value we can show ("888"), so
-        // a 2 -> 3 digit change can never get cut off, and keep the full
-        // font height. Don't try to shrink this box to dodge the progress
-        // ring: the digits' ink sits lower than the box centre, so clamping
-        // the height symmetrically shaves the bottoms off glyphs like 4 and
-        // 7. The ring is restored by repainting it in drawDynamicRegions.
-        var hrWidth = dc.getTextWidthInPixels("888", Graphics.FONT_NUMBER_MILD);
-        var hrHeight = dc.getFontHeight(Graphics.FONT_NUMBER_MILD);
-        _hrClipX = _subWindowX - hrWidth / 2;
-        _hrClipY = hrTextY - hrHeight / 2;
-        _hrClipW = hrWidth;
-        _hrClipH = hrHeight;
-        _lastDrawnHeartRate = heartRate;
+            var batteryFill = (_batteryLevel / 100.0 * (batH - 4)).toNumber();
+            if (batteryFill > 0) {
+                dc.fillRectangle(batX + 2, batY + batH - 2 - batteryFill, batW - 4, batteryFill);
+            }
+            clearRegion(dc, batX - 7, batY + batH + 1, 31, 130 - (batY + batH + 1));
+            dc.drawText(batX + 8, batY + batH + 1, Graphics.FONT_XTINY, _batteryStr, Graphics.TEXT_JUSTIFY_CENTER);
 
-        // Battery Icon
-        var batX = secX + 25, batY = baselineY - 34, batW = 16, batH = 28;
-        dc.setPenWidth(1);
-        dc.drawRectangle(batX, batY, batW, batH);
-        dc.fillRectangle(batX + 4, batY - 4, 8, 4); // Tip
-
-        var batteryFill = (_batteryLevel / 100.0 * (batH - 4)).toNumber();
-        if (batteryFill > 0) {
-            dc.fillRectangle(batX + 2, batY + batH - 2 - batteryFill, batW - 4, batteryFill);
+            dc.clearClip();
+            _drawnBattery = batteryKey;
         }
-        dc.drawText(batX + 8, batY + batH + 1, Graphics.FONT_XTINY, _batteryStr, Graphics.TEXT_JUSTIFY_CENTER);
+        if (force || _graphDirty) {
+            clearRegion(dc, 0, 130, dc.getWidth(), dc.getHeight() - 130);
+            renderHrGraph(dc, 5, 130, 120, 40);
+            dc.clearClip();
+            _graphDirty = false;
+        }
+    }
 
-        // HR Graph
-        renderHrGraph(dc, 5, 130, 120, 40);
+    private function digitWidth(dc, font) as Number {
+        var width = 0;
+        for (var i = 0; i < 10; i++) {
+            var w = dc.getTextWidthInPixels(i.toString(), font);
+            if (w > width) { width = w; }
+        }
+        return width;
+    }
+
+    private function clearRegion(dc, x, y, width, height) as Void {
+        dc.setClip(x, y, width, height);
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
+        dc.clear();
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+    }
+
+    private function drawSeconds(dc as Graphics.Dc, second as Number) as Void {
+        var text = second.format("%02d");
+        for (var i = 0; i < 2; i++) {
+            if (_drawnSeconds.length() != 2 ||
+                !_drawnSeconds.substring(i, i + 1).equals(text.substring(i, i + 1))) {
+                var x = _secClipX + i * _secondDigitWidth;
+                clearRegion(dc, x, _secClipY, _secondDigitWidth, _secClipH);
+                dc.drawText(x, _secClipY, Graphics.FONT_TINY,
+                    text.substring(i, i + 1), Graphics.TEXT_JUSTIFY_LEFT);
+            }
+        }
+        dc.clearClip();
+        _drawnSeconds = text;
+    }
+
+    // A rejected partial frame was not displayed: invalidate its digit cache.
+    function invalidateSeconds() as Void {
+        _drawnSeconds = "";
     }
 
     // Cheap path: refreshes only the regions that change every second
     // (seconds text, heart rate) without touching the rest of the screen.
     private function drawDynamicRegions(dc as Graphics.Dc, currentSecond as Number, heartRate as String) as Void {
-        var secondsStr = currentSecond.format("%02d");
-
-        // Update Seconds
-        dc.setClip(_secClipX, _secClipY, _secClipW, _secClipH);
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
-        dc.clear();
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(_secClipX, _secClipY, Graphics.FONT_TINY, secondsStr, Graphics.TEXT_JUSTIFY_LEFT);
+        drawSeconds(dc, currentSecond);
 
         // Update Heart Rate only when it actually changed - it rarely moves
         // every second, so this skips a clear+redraw on most calls.
@@ -350,16 +433,15 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     }
 
     function onPartialUpdate(dc as Graphics.Dc) as Void {
-        if (!_isVisible || !_isSleep) { return; }
+        if (!_isVisible || !_isSleep || _lastMinute == -1) { return; }
 
         var clockTime = System.getClockTime();
-        drawDynamicRegions(dc, clockTime.sec, getCachedHeartRateString(clockTime.sec));
+        // Keep sensor/history reads and the eye region out of the sleep budget.
+        drawSeconds(dc, clockTime.sec);
     }
 
-    // onPartialUpdate runs under a hard execution-time budget, and
-    // getHeartRateString() can fall through to building a history iterator -
-    // exactly what happens while the watch sits idle on the wrist. Re-read
-    // the sensor every 5 seconds instead of every single second.
+    // Active mode only: refresh heart rate at most every five seconds.
+    // Sleeping mode reads it at the minute boundary in onUpdate().
     private function getCachedHeartRateString(currentSecond as Number) as String {
         if (_cachedHeartRate.equals("") || currentSecond % 5 == 0) {
             _cachedHeartRate = getHeartRateString();
@@ -394,15 +476,23 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var lastChargeTime = Storage.getValue("lastChargeTime");
         var prevBattery = Storage.getValue("prevBattery");
 
-        if (lastChargeLevel == null || (prevBattery != null && battery > prevBattery + 1)) {
+        var charging = systemStats.charging;
+        // Track the baseline through charging and reset when disconnected.
+        // The level-rise check also catches charging while this face was hidden.
+        if (lastChargeLevel == null || lastChargeTime == null || charging || _wasCharging ||
+            (prevBattery != null && battery > prevBattery + 1)) {
             lastChargeLevel = battery;
             lastChargeTime = nowTimestamp;
             Storage.setValue("lastChargeLevel", lastChargeLevel);
             Storage.setValue("lastChargeTime", lastChargeTime);
         }
-        Storage.setValue("prevBattery", battery);
+        if (prevBattery == null || prevBattery != battery) {
+            Storage.setValue("prevBattery", battery);
+        }
+        _wasCharging = charging;
+        _drainStr = "--%/d";
 
-        if (lastChargeTime != null && nowTimestamp > lastChargeTime) {
+        if (!charging && lastChargeTime != null && nowTimestamp > lastChargeTime) {
             var daysPassed = (nowTimestamp - lastChargeTime).toFloat() / 86400.0;
             if (daysPassed > 0.01) {
                 var drainPerDay = (lastChargeLevel - battery) / daysPassed;
@@ -412,32 +502,48 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     }
 
     private function updateHrGraphData() as Void {
-        if (ActivityMonitor has :getHeartRateHistory) {
-            var hrHistory = ActivityMonitor.getHeartRateHistory(90, true);
-            if (hrHistory != null) {
-                var min = 255, max = 0, count = 0;
-                var sample = hrHistory.next();
-                while (sample != null && count < 90) {
-                    var hr = sample.heartRate;
-                    if (hr != null && hr != ActivityMonitor.INVALID_HR_SAMPLE) {
-                        _hrSamples[count] = hr;
-                        if (hr < min) { min = hr; }
-                        if (hr > max) { max = hr; }
-                    } else {
-                        _hrSamples[count] = null;
-                    }
-                    sample = hrHistory.next();
-                    count++;
+        _graphDirty = true;
+        _hrSampleCount = 0;
+        _hrMin = 0;
+        _hrMax = 0;
+        for (var i = 0; i < 90; i++) { _hrSamples[i] = null; }
+
+        if (!(ActivityMonitor has :getHeartRateHistory)) { return; }
+        var now = Time.now().value();
+        var hrHistory = ActivityMonitor.getHeartRateHistory(new Time.Duration(90 * 60), true);
+
+        var min = 255, max = 0, validCount = 0;
+        var sample = hrHistory.next();
+        while (sample != null) {
+            var age = now - sample.when.value();
+            var hr = sample.heartRate;
+            // Timestamp-based minute buckets preserve gaps and the time scale
+            // regardless of the device's history sampling interval. Keep the
+            // newest valid reading in each bucket (the iterator is newest first).
+            if (age >= 0 && age < 90 * 60 && hr != null && hr != ActivityMonitor.INVALID_HR_SAMPLE) {
+                var bucket = age / 60;
+                if (_hrSamples[bucket] == null) {
+                    _hrSamples[bucket] = hr;
+                    if (hr < min) { min = hr; }
+                    if (hr > max) { max = hr; }
+                    validCount++;
                 }
-                _hrSampleCount = count;
-                _hrMin = min;
-                _hrMax = max;
             }
+            sample = hrHistory.next();
+        }
+        if (validCount > 0) {
+            _hrSampleCount = 90;
+            _hrMin = min;
+            _hrMax = max;
         }
     }
 
     private function renderHrGraph(dc as Graphics.Dc, x as Number, y as Number, width as Number, height as Number) as Void {
-        if (_hrSampleCount == 0) { return; }
+        if (_hrSampleCount == 0) {
+            dc.drawText(x + width / 2, y + height / 2, Graphics.FONT_XTINY,
+                "HR --", Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            return;
+        }
 
         var displayMin = _hrMin;
         var displayMax = _hrMax;
@@ -483,6 +589,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             if (hr != null) {
                 var currentX = x + (width - 1) - (i.toFloat() * (width - 1) / 89.0).toNumber();
                 var currentY = y + height - ((hr - padMinHr).toFloat() / range * height).toNumber();
+                dc.drawPoint(currentX, currentY);
                 if (lastX != -1) { dc.drawLine(lastX, lastY, currentX, currentY); }
                 lastX = currentX; lastY = currentY;
             } else {
