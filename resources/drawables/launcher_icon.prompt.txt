@@ -1,0 +1,5 @@
+Generated with the built-in image_gen tool.
+Converted to 62x62 grayscale, thresholded at 50% for a black-and-white display.
+
+Prompt:
+Create a square monochrome launcher icon for a custom Garmin Instinct 2 Solar watchface. Minimal bold white digital-watch emblem on pure black background: an angular rounded watch dial outline, a small circular subdial in its upper right, and a bold simple pulse trace across the lower part. No text, no numbers, no branding, no gradients, no shadow, no photographic watch mockup. Flat crisp high-contrast black and white shapes, generous stroke widths and spacing so it remains legible at 62 by 62 pixels. Center the complete emblem with 10 percent black margin on every side. Intended output asset is a tiny 62x62 PNG launcher icon; provide a square image.
