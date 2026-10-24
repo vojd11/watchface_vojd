@@ -11,6 +11,14 @@ import Toybox.Application.Storage;
 
 class Instinct2DraftView extends WatchUi.WatchFace {
 
+    // How often the seconds readout is actually repainted. The system still
+    // wakes us every second - that cadence is fixed - but we only touch the
+    // display on every Nth of those wake-ups. Set to 1 for a smoothly
+    // ticking seconds display, higher to trade that for battery. 60 must
+    // stay divisible by this so the cadence lines up with the minute
+    // boundary. Sensor read cadence is independent of this.
+    private const UPDATE_INTERVAL_SEC = 5;
+
     var timeFontResource;
     private var _drawnTime as String = "";
     private var _drawnSeconds as String = "";
@@ -221,9 +229,11 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             var heartRate = getHeartRateString();
             _cachedHeartRate = heartRate;
             drawChangedFrame(dc, currentSecond, heartRate, forceUpdate);
-        } else {
+        } else if (currentSecond % UPDATE_INTERVAL_SEC == 0) {
             drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(currentSecond));
         }
+        // Otherwise draw nothing at all: the display keeps what it already
+        // has, and we skip the clip/clear/drawText work entirely.
     }
 
     private function drawChangedFrame(dc as Graphics.Dc, currentSecond as Number, heartRate as String, force as Boolean) as Void {
@@ -435,13 +445,22 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     function onPartialUpdate(dc as Graphics.Dc) as Void {
         if (!_isVisible || !_isSleep || _lastMinute == -1) { return; }
 
+        // Still woken every second by the system, but bail out before doing
+        // any work on the seconds we aren't painting. This early return is
+        // where the sleep-mode saving being measured on this branch comes
+        // from.
         var clockTime = System.getClockTime();
+        if (clockTime.sec % UPDATE_INTERVAL_SEC != 0) { return; }
+
         // Keep sensor/history reads and the eye region out of the sleep budget.
         drawSeconds(dc, clockTime.sec);
     }
 
     // Active mode only: refresh heart rate at most every five seconds.
     // Sleeping mode reads it at the minute boundary in onUpdate().
+    // Deliberately NOT tied to UPDATE_INTERVAL_SEC: lowering that constant
+    // should only make the display repaint more often, never make us poll
+    // the HR sensor harder than this.
     private function getCachedHeartRateString(currentSecond as Number) as String {
         if (_cachedHeartRate.equals("") || currentSecond % 5 == 0) {
             _cachedHeartRate = getHeartRateString();
