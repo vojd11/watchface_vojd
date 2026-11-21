@@ -34,6 +34,9 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     // without paying for a Gregorian.info() call on every update.
     private var _lastUtcDay as Number = -1;
     private var _lastTzOffset as Number = -1;
+    // Epoch minute of the last minutely refresh. Catches clock jumps that
+    // land on the same hour and minute (a whole-day or whole-hour shift).
+    private var _lastMinuteStamp as Number = -1;
 
     // Per-minute cached data
     private var _minutesStr as String = "";
@@ -77,6 +80,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _hrClipH as Number = 0;
     private var _lastDrawnHeartRate as String = "";
     private var _cachedHeartRate as String = "";
+    private var _lastHrRead as Number = -1;
 
     function initialize() {
         WatchFace.initialize();
@@ -134,15 +138,21 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         var currentHour = clockTime.hour;
 
         var forceUpdate = (_lastMinute == -1);
-        var minuteChanged = forceUpdate || currentMinute != _lastMinute;
+        var nowStamp = Time.now().value();
+        var minuteStamp = nowStamp / 60;
+        // The epoch minute and timezone offset also catch a clock jump that
+        // keeps the displayed minute (manual change, travel, DST), so the
+        // refresh happens at once instead of at the next rollover.
+        var minuteChanged = forceUpdate || currentMinute != _lastMinute ||
+            currentHour != _lastHour || minuteStamp != _lastMinuteStamp ||
+            clockTime.timeZoneOffset != _lastTzOffset;
 
         // Catch date/timezone discontinuities that don't move the hour
-        // (manual clock change, travel, DST). Only worth checking when the
-        // minute rolls over - these never need sub-minute detection - and
-        // both reads are cheap compared to Gregorian.info().
+        // (manual clock change, travel, DST). Both reads are cheap compared
+        // to Gregorian.info().
         var calendarChanged = false;
         if (minuteChanged) {
-            var utcDay = Time.now().value() / 86400;
+            var utcDay = nowStamp / 86400;
             var tzOffset = clockTime.timeZoneOffset;
             if (utcDay != _lastUtcDay || tzOffset != _lastTzOffset) {
                 _lastUtcDay = utcDay;
@@ -193,8 +203,9 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         // --- MINUTELY UPDATES ---
         if (minuteChanged) {
             _lastMinute = currentMinute;
+            _lastMinuteStamp = minuteStamp;
             _minutesStr = currentMinute.format("%02d");
-            updateBatteryLevel(Time.now().value());
+            updateBatteryLevel(nowStamp);
 
             // Steps
             var stepGoal = 5000;
@@ -220,9 +231,10 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         if (hourChanged || minuteChanged) {
             var heartRate = getHeartRateString();
             _cachedHeartRate = heartRate;
+            _lastHrRead = nowStamp;
             drawChangedFrame(dc, currentSecond, heartRate, forceUpdate);
         } else {
-            drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(currentSecond));
+            drawDynamicRegions(dc, currentSecond, getCachedHeartRateString(nowStamp));
         }
     }
 
@@ -440,11 +452,14 @@ class Instinct2DraftView extends WatchUi.WatchFace {
         drawSeconds(dc, clockTime.sec);
     }
 
-    // Active mode only: refresh heart rate at most every five seconds.
+    // Active mode only: refresh heart rate once the cached reading is five
+    // seconds old (or the clock moved backwards), so a wake-up between
+    // 5-second marks still shows a fresh value.
     // Sleeping mode reads it at the minute boundary in onUpdate().
-    private function getCachedHeartRateString(currentSecond as Number) as String {
-        if (_cachedHeartRate.equals("") || currentSecond % 5 == 0) {
+    private function getCachedHeartRateString(now as Number) as String {
+        if (_cachedHeartRate.equals("") || now < _lastHrRead || now - _lastHrRead >= 5) {
             _cachedHeartRate = getHeartRateString();
+            _lastHrRead = now;
         }
         return _cachedHeartRate;
     }
