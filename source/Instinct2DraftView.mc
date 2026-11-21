@@ -54,7 +54,7 @@ class Instinct2DraftView extends WatchUi.WatchFace {
     private var _batteryStr as String = "0%";
     private var _batteryLevel as Float = 0.0;
     private var _wasCharging as Boolean = false;
-    private var _drainStr as String = "--%/d";
+    private var _drainStr as String = "--%";
 
     // Static layout, computed once
     private var _subWindowX as Number = 144;
@@ -490,13 +490,13 @@ class Instinct2DraftView extends WatchUi.WatchFace {
             Storage.setValue("prevBattery", battery);
         }
         _wasCharging = charging;
-        _drainStr = "--%/d";
+        _drainStr = "--%";
 
         if (!charging && lastChargeTime != null && nowTimestamp > lastChargeTime) {
             var daysPassed = (nowTimestamp - lastChargeTime).toFloat() / 86400.0;
             if (daysPassed > 0.01) {
                 var drainPerDay = (lastChargeLevel - battery) / daysPassed;
-                _drainStr = drainPerDay > 0 ? drainPerDay.format("%.1f") + "%/d" : "--%/d";
+                _drainStr = drainPerDay > 0 ? drainPerDay.format("%.1f") + "%" : "--%";
             }
         }
     }

@@ -74,7 +74,7 @@ const fixtures=[
   {_minutesStr:'35'}, {_minutesStr:'40'}, {_hoursStr:'13',_minutesStr:'00'},
   {_batteryStr:'9%',_batteryLevel:9}, {_stepsProgress:0.9}, {_stepsProgress:0},
   {_dateStr:'22.09.2026',_dayOfWeekStr:'TUE'}, {_tempStr:'--',_hiLowStr:'--/--'},
-  {_stepsStr:'9876',_drainStr:'2.1%/d'}, {_hoursStr:'00',_minutesStr:'00'},
+  {_stepsStr:'9876',_drainStr:'2.1%'}, {_hoursStr:'00',_minutesStr:'00'},
 ];
 for(const fixture of fixtures) {
   Object.assign(v,fixture); v.drawChangedFrame(dc,0,'72',false);
